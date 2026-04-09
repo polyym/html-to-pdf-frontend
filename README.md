@@ -7,14 +7,13 @@ Built with SvelteKit and deployed on Netlify. Uses the [html-to-pdf-rust-api](ht
 ## Features
 
 - Code editor with syntax-friendly monospace input
-- HTML file upload via file picker or drag-and-drop (works on the editor too)
+- HTML file upload via drag-and-drop or file picker
 - Live HTML preview in a sandboxed iframe
 - PDF download with original filename preserved
-- Adaptive API health monitoring with visible status indicator (Online/Offline/Connecting)
-- Startup banner when the backend is waking up (handles Render free-tier cold starts)
+- Adaptive API health monitoring with visible status indicator (Online/Offline/Starting)
 - Dismissible toast notifications with auto-clear timers
 - Keyboard shortcuts: `Ctrl+Enter` (`⌘+Enter` on Mac) to download, `Esc` to clear (when focused)
-- Accessible: WAI-ARIA tabs, ARIA live regions, focus indicators, screen reader support
+- Accessible: ARIA live regions, focus indicators, screen reader support
 - Responsive design with mobile, touch, and small-screen support
 
 ## Project Structure

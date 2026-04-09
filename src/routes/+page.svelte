@@ -7,16 +7,17 @@
 	let isLoading = $state(false);
 	let errorMessage = $state('');
 	let successMessage = $state('');
-	let activeTab = $state<'editor' | 'upload'>('editor');
 	let fileName = $state('');
 	let fileInputEl = $state<HTMLInputElement | null>(null);
 	let isTouchDevice = $state(false);
 	let isMac = $state(false);
 	let showPreview = $state(false);
+	let isDragging = $state(false);
 	let apiStatus = $state<ApiStatus>('checking');
 	let apiHasConnected = $state(false);
 	let successTimer: ReturnType<typeof setTimeout> | null = null;
 	let errorTimer: ReturnType<typeof setTimeout> | null = null;
+	let dragCounter = 0;
 
 	const hasContent = $derived(html.trim().length > 0);
 
@@ -47,7 +48,6 @@
 		if (result.success) {
 			html = result.content!;
 			fileName = result.fileName!;
-			activeTab = 'editor';
 			showSuccess(`Loaded ${result.fileName}`);
 		} else {
 			showError(result.error!);
@@ -60,12 +60,30 @@
 	}
 
 	function handleDrop(e: DragEvent) {
+		e.preventDefault();
+		dragCounter = 0;
+		isDragging = false;
 		const file = getFileFromDrop(e);
 		if (file) handleFile(file);
 	}
 
 	function handleDragOver(e: DragEvent) {
 		e.preventDefault();
+	}
+
+	function handleDragEnter(e: DragEvent) {
+		e.preventDefault();
+		dragCounter++;
+		isDragging = true;
+	}
+
+	function handleDragLeave(e: DragEvent) {
+		e.preventDefault();
+		dragCounter--;
+		if (dragCounter <= 0) {
+			dragCounter = 0;
+			isDragging = false;
+		}
 	}
 
 	async function generatePdf() {
@@ -166,17 +184,9 @@
 		</div>
 		<div class="status-indicator" role="status" aria-label={apiStatus === 'online' ? 'API is online' : apiStatus === 'offline' ? 'API is offline' : 'Connecting to API'}>
 			<div class="status-dot" class:online={apiStatus === 'online'} class:offline={apiStatus === 'offline'} class:checking={apiStatus === 'checking'} aria-hidden="true"></div>
-			<span class="status-label" aria-hidden="true">{apiStatus === 'online' ? 'Online' : apiStatus === 'offline' ? 'Offline' : 'Connecting...'}</span>
+			<span class="status-label" aria-hidden="true">{apiStatus === 'online' ? 'Online' : apiStatus === 'offline' ? 'Offline' : 'Starting...'}</span>
 		</div>
 	</header>
-
-	<!-- Startup banner -->
-	{#if !apiHasConnected && apiStatus !== 'online'}
-		<div class="startup-banner" role="status">
-			<div class="startup-spinner"></div>
-			Backend is starting up, this may take a moment...
-		</div>
-	{/if}
 
 	<!-- Toasts -->
 	{#if successMessage}
@@ -209,98 +219,49 @@
 		</div>
 	{/if}
 
-	<!-- Tabs -->
-	<div class="tabs" role="tablist">
-		<button class="tab" class:active={activeTab === 'editor'} onclick={() => (activeTab = 'editor')} role="tab" id="tab-editor" aria-selected={activeTab === 'editor'} aria-controls="tabpanel-editor" tabindex={activeTab === 'editor' ? 0 : -1} onkeydown={(e) => { if (e.key === 'ArrowRight' || e.key === 'ArrowLeft') { e.preventDefault(); activeTab = activeTab === 'editor' ? 'upload' : 'editor'; requestAnimationFrame(() => document.getElementById(`tab-${activeTab}`)?.focus()); } }}>
-			<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-				<polyline points="16 18 22 12 16 6" />
-				<polyline points="8 6 2 12 8 18" />
-			</svg>
-			Editor
-		</button>
-		<button class="tab" class:active={activeTab === 'upload'} onclick={() => (activeTab = 'upload')} role="tab" id="tab-upload" aria-selected={activeTab === 'upload'} aria-controls="tabpanel-upload" tabindex={activeTab === 'upload' ? 0 : -1} onkeydown={(e) => { if (e.key === 'ArrowRight' || e.key === 'ArrowLeft') { e.preventDefault(); activeTab = activeTab === 'editor' ? 'upload' : 'editor'; requestAnimationFrame(() => document.getElementById(`tab-${activeTab}`)?.focus()); } }}>
-			<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-				<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
-				<polyline points="17 8 12 3 7 8" />
-				<line x1="12" y1="3" x2="12" y2="15" />
-			</svg>
-			Upload
-		</button>
-	</div>
-
-	<!-- Editor Tab -->
-		<div class="field" ondrop={handleDrop} ondragover={handleDragOver} role="tabpanel" id="tabpanel-editor" aria-labelledby="tab-editor" tabindex="0" hidden={activeTab !== 'editor'}>
-			<div class="field-header">
-				<label for="html-input">
-					HTML Code
-					{#if fileName}
-						<span class="file-badge">{fileName}</span>
-					{/if}
-				</label>
-				{#if hasContent}
-					<button class="clear-btn" onclick={clearAll} aria-label="Clear editor">Clear</button>
-				{/if}
-			</div>
-			<textarea
-				id="html-input"
-				class="mono"
-				bind:value={html}
-				placeholder={'<!DOCTYPE html>\n<html>\n<head>\n  <style>\n    body { font-family: sans-serif; }\n  </style>\n</head>\n<body>\n  <h1>Your content here</h1>\n</body>\n</html>'}
-				spellcheck="false"
-			></textarea>
-		</div>
-
-	<!-- Upload Tab -->
-		<div
-			class="drop-zone"
-			ondrop={handleDrop}
-			ondragover={handleDragOver}
-			role="tabpanel"
-			id="tabpanel-upload"
-			aria-labelledby="tab-upload"
-			tabindex="0"
-			hidden={activeTab !== 'upload'}
-		>
-			<input
-				type="file"
-				accept=".html,.htm"
-				onchange={handleFileUpload}
-				bind:this={fileInputEl}
-				class="file-input"
-				aria-label="Upload HTML file"
-			/>
-			<div class="drop-icon">
-				<svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
-					<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
-					<polyline points="17 8 12 3 7 8" />
-					<line x1="12" y1="3" x2="12" y2="15" />
-				</svg>
-			</div>
-			<p class="drop-label">
+	<!-- Editor -->
+	<!-- svelte-ignore a11y_no_static_element_interactions -->
+	<div class="field" class:dragging={isDragging} ondrop={handleDrop} ondragover={handleDragOver} ondragenter={handleDragEnter} ondragleave={handleDragLeave}>
+		<div class="field-header">
+			<label for="html-input">
+				HTML Code
 				{#if fileName}
-					<span class="file-name">{fileName}</span>
-				{:else}
-					Drop an HTML file here or <span class="browse">browse</span>
+					<span class="file-badge">{fileName}</span>
 				{/if}
-			</p>
-			<p class="drop-hint">Accepts .html and .htm files</p>
+			</label>
+			{#if hasContent}
+				<button class="preview-link" onclick={() => (showPreview = !showPreview)}>
+					<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+						{#if showPreview}
+							<path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94" />
+							<line x1="1" y1="1" x2="23" y2="23" />
+						{:else}
+							<path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
+							<circle cx="12" cy="12" r="3" />
+						{/if}
+					</svg>
+					{showPreview ? 'Hide' : 'Preview'}
+				</button>
+			{/if}
 		</div>
-
-	<!-- Preview Toggle -->
-	{#if hasContent}
-		<button class="preview-toggle" onclick={() => (showPreview = !showPreview)}>
-			<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-				{#if showPreview}
-					<path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94" />
-					<line x1="1" y1="1" x2="23" y2="23" />
-				{:else}
-					<path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
-					<circle cx="12" cy="12" r="3" />
-				{/if}
-			</svg>
-			{showPreview ? 'Hide Preview' : 'Show Preview'}
-		</button>
-	{/if}
+		<textarea
+			id="html-input"
+			class="mono"
+			bind:value={html}
+			placeholder={'<!DOCTYPE html>\n<html>\n<head>\n  <style>\n    body { font-family: sans-serif; }\n  </style>\n</head>\n<body>\n  <h1>Your content here</h1>\n</body>\n</html>'}
+			spellcheck="false"
+		></textarea>
+		<input
+			type="file"
+			accept=".html,.htm"
+			onchange={handleFileUpload}
+			bind:this={fileInputEl}
+			class="file-input-hidden"
+			aria-label="Upload HTML file"
+			tabindex="-1"
+		/>
+		<p class="drop-hint">Drop an .html or .htm file, or <button class="browse-link" onclick={() => fileInputEl?.click()}>browse</button></p>
+	</div>
 
 	<!-- Live Preview -->
 	{#if showPreview && hasContent}
@@ -318,18 +279,21 @@
 		</div>
 	{/if}
 
-	<!-- Info -->
-	<details class="info-details">
+	<!-- About -->
+	<details class="about-details">
 		<summary>About this tool</summary>
 		<p>
-			Powered by a <strong>Rust</strong> web server and a <strong>Node.js</strong> worker
-			that uses <a href="https://pptr.dev/" target="_blank" rel="noopener noreferrer">Puppeteer</a>
+			Powered by a Rust web server and a Node.js worker that uses
+			<a href="https://pptr.dev/" target="_blank" rel="noopener noreferrer">Puppeteer</a>
 			to render your HTML in headless Chrome and convert it to a PDF.
 			{#if !isLocalApi}
 				The backend API is open and available at
 				<a href={API_URL + '/health'} target="_blank" rel="noopener noreferrer">{API_URL}</a>.
 			{/if}
-			This project is open source — view the code for the <a href="https://github.com/polyym/html-to-pdf-frontend" target="_blank" rel="noopener noreferrer">website</a> and the <a href="https://github.com/polyym/html-to-pdf-rust-api" target="_blank" rel="noopener noreferrer">backend API</a> on GitHub.
+			This project is open source; view the code for the
+			<a href="https://github.com/polyym/html-to-pdf-frontend" target="_blank" rel="noopener noreferrer">website</a>
+			and the <a href="https://github.com/polyym/html-to-pdf-rust-api" target="_blank" rel="noopener noreferrer">backend API</a>
+			on GitHub.
 		</p>
 	</details>
 
@@ -412,7 +376,7 @@
 		color: var(--text);
 		-webkit-font-smoothing: antialiased;
 
-		max-width: 640px;
+		max-width: 960px;
 		margin: 0 auto;
 		padding: 20px;
 		padding-top: calc(20px + var(--safe-top));
@@ -506,32 +470,6 @@
 		color: var(--text-secondary);
 	}
 
-	/* Startup Banner */
-	.startup-banner {
-		display: flex;
-		align-items: center;
-		gap: 10px;
-		padding: 12px 16px;
-		margin-bottom: 20px;
-		font-size: 14px;
-		font-weight: 500;
-		color: var(--text-secondary);
-		background: var(--surface);
-		border: 1px solid var(--border);
-		border-radius: 10px;
-		animation: fadeIn 0.2s ease;
-	}
-
-	.startup-spinner {
-		width: 14px;
-		height: 14px;
-		border: 2px solid var(--border-hover);
-		border-top-color: var(--text-secondary);
-		border-radius: 50%;
-		animation: spin 0.8s linear infinite;
-		flex-shrink: 0;
-	}
-
 	/* Toast */
 	.toast {
 		display: flex;
@@ -587,103 +525,6 @@
 		opacity: 1;
 	}
 
-	/* Info Details */
-	.info-details {
-		margin-bottom: 8px;
-	}
-
-	.info-details summary {
-		font-size: 13px;
-		font-weight: 500;
-		color: var(--text-dim);
-		cursor: pointer;
-		padding: 8px 0;
-		list-style: none;
-		transition: color 0.15s ease;
-	}
-
-	.info-details summary::-webkit-details-marker {
-		display: none;
-	}
-
-	.info-details summary::before {
-		content: '+ ';
-		font-family: var(--mono);
-	}
-
-	.info-details[open] summary::before {
-		content: '- ';
-	}
-
-	.info-details summary:hover {
-		color: var(--text-secondary);
-	}
-
-	.info-details p {
-		font-size: 14px;
-		line-height: 1.6;
-		color: var(--text-secondary);
-		margin: 4px 0 0;
-		padding: 12px 16px;
-		background: var(--surface);
-		border: 1px solid var(--border);
-		border-radius: 10px;
-	}
-
-	.info-details strong {
-		color: var(--text);
-		font-weight: 600;
-	}
-
-	.info-details a {
-		color: var(--text);
-		text-decoration: underline;
-		text-underline-offset: 2px;
-		transition: color 0.15s ease;
-	}
-
-	.info-details a:hover {
-		color: var(--success);
-	}
-
-	/* Tabs */
-	.tabs {
-		display: flex;
-		gap: 8px;
-		margin-bottom: 20px;
-	}
-
-	.tab {
-		display: inline-flex;
-		align-items: center;
-		gap: 8px;
-		padding: 10px 18px;
-		font-family: var(--font);
-		font-size: 14px;
-		font-weight: 500;
-		color: var(--text-secondary);
-		background: var(--surface);
-		border: 1px solid var(--border);
-		border-radius: 10px;
-		cursor: pointer;
-		transition: all 0.15s ease;
-	}
-
-	.tab:hover {
-		color: var(--text);
-		border-color: var(--border-hover);
-	}
-
-	.tab.active {
-		color: var(--text);
-		background: var(--surface-2);
-		border-color: var(--border-hover);
-	}
-
-	.tab:active {
-		transform: scale(0.98);
-	}
-
 	/* Field */
 	.field {
 		display: flex;
@@ -719,7 +560,10 @@
 		vertical-align: middle;
 	}
 
-	.clear-btn {
+	.preview-link {
+		display: inline-flex;
+		align-items: center;
+		gap: 5px;
 		font-family: var(--font);
 		font-size: 12px;
 		font-weight: 500;
@@ -732,9 +576,9 @@
 		transition: all 0.15s ease;
 	}
 
-	.clear-btn:hover {
-		color: var(--error);
-		background: rgba(239, 68, 68, 0.1);
+	.preview-link:hover {
+		color: var(--text-secondary);
+		background: var(--surface-2);
 	}
 
 	textarea {
@@ -771,104 +615,42 @@
 		tab-size: 2;
 	}
 
-	/* Drop Zone */
-	.drop-zone {
-		position: relative;
-		display: flex;
-		flex-direction: column;
-		align-items: center;
-		justify-content: center;
-		gap: 12px;
-		min-height: 200px;
-		padding: 32px 20px;
-		background: var(--surface);
-		border: 2px dashed var(--border);
-		border-radius: 14px;
-		cursor: pointer;
-		transition: all 0.15s ease;
-		margin-bottom: 16px;
-	}
-
-	.drop-zone:hover {
-		border-color: var(--border-hover);
-		background: var(--surface-2);
-	}
-
-	.file-input {
-		position: absolute;
-		inset: 0;
-		width: 100%;
-		height: 100%;
-		opacity: 0;
-		cursor: pointer;
-	}
-
-	.drop-zone:focus-within {
+	/* Drag and drop */
+	.field.dragging textarea {
 		border-color: var(--accent);
-		background: var(--surface-2);
+		border-style: dashed;
 	}
 
-	.drop-icon {
-		display: flex;
-		align-items: center;
-		justify-content: center;
-		width: 56px;
-		height: 56px;
-		background: var(--surface-2);
-		border: 1px solid var(--border);
-		border-radius: 14px;
-		color: var(--text-secondary);
+	.file-input-hidden {
+		position: absolute;
+		width: 0;
+		height: 0;
+		opacity: 0;
+		pointer-events: none;
 	}
 
-	.drop-label {
-		font-size: 15px;
-		font-weight: 500;
-		color: var(--text-secondary);
+	.drop-hint {
+		font-size: 12px;
+		color: var(--text-dim);
 		margin: 0;
-		text-align: center;
+		padding-left: 2px;
 	}
 
-	.browse {
+	.browse-link {
+		font-family: var(--font);
+		font-size: 12px;
+		font-weight: 500;
 		color: var(--accent);
+		background: none;
+		border: none;
+		cursor: pointer;
+		padding: 0;
 		text-decoration: underline;
 		text-underline-offset: 2px;
 	}
 
-	.file-name {
-		color: var(--success);
-	}
-
-	.drop-hint {
-		font-size: 13px;
-		color: var(--text-dim);
-		margin: 0;
-	}
-
-	/* Preview Toggle */
-	.preview-toggle {
-		display: inline-flex;
-		align-items: center;
-		gap: 8px;
-		padding: 10px 16px;
-		font-family: var(--font);
-		font-size: 13px;
-		font-weight: 500;
-		color: var(--text-secondary);
-		background: var(--surface);
-		border: 1px solid var(--border);
-		border-radius: 10px;
-		cursor: pointer;
-		transition: all 0.15s ease;
-		margin-bottom: 16px;
-	}
-
-	.preview-toggle:hover {
+	.browse-link:hover {
 		color: var(--text);
-		border-color: var(--border-hover);
-	}
-
-	.preview-toggle:active {
-		transform: scale(0.98);
 	}
 
 	/* Preview Container */
@@ -894,7 +676,7 @@
 
 	.preview-frame {
 		background: #ffffff;
-		max-height: 600px;
+		max-height: min(400px, 50vh);
 		overflow-y: auto;
 	}
 
@@ -903,6 +685,60 @@
 		height: 400px;
 		border: none;
 		display: block;
+	}
+
+	/* About */
+	.about-details {
+		margin-bottom: 8px;
+	}
+
+	.about-details summary {
+		font-size: 13px;
+		font-weight: 500;
+		color: var(--text-dim);
+		cursor: pointer;
+		padding: 8px 0;
+		list-style: none;
+		transition: color 0.15s ease;
+	}
+
+	.about-details summary::-webkit-details-marker {
+		display: none;
+	}
+
+	.about-details summary::before {
+		content: '+ ';
+		font-family: var(--mono);
+	}
+
+	.about-details[open] summary::before {
+		content: '- ';
+	}
+
+	.about-details summary:hover {
+		color: var(--text-secondary);
+	}
+
+	.about-details p {
+		font-size: 14px;
+		line-height: 1.6;
+		color: var(--text-secondary);
+		margin: 4px 0 0;
+		padding: 12px 16px;
+		background: var(--surface);
+		border: 1px solid var(--border);
+		border-radius: 10px;
+	}
+
+	.about-details a {
+		color: var(--text);
+		text-decoration: underline;
+		text-underline-offset: 2px;
+		transition: color 0.15s ease;
+	}
+
+	.about-details a:hover {
+		color: var(--success);
 	}
 
 	/* Footer */
@@ -916,16 +752,17 @@
 
 	.credit {
 		color: var(--text-dim);
+		font-size: 12px;
 	}
 
 	.credit a {
-		color: var(--text-secondary);
+		color: var(--text-dim);
 		text-decoration: none;
 		transition: color 0.15s ease;
 	}
 
 	.credit a:hover {
-		color: var(--text);
+		color: var(--text-secondary);
 	}
 
 	/* Bottom Actions */
@@ -949,7 +786,7 @@
 	.bottom-actions-inner {
 		display: flex;
 		gap: 10px;
-		max-width: 640px;
+		max-width: 960px;
 		margin: 0 auto;
 	}
 
@@ -1051,17 +888,16 @@
 			height: 24px;
 		}
 
-		.tab {
-			padding: 8px 14px;
-			font-size: 13px;
-		}
-
 		.bottom-actions {
 			padding-left: 16px;
 			padding-right: 16px;
 		}
 
 		.status-label {
+			display: none;
+		}
+
+		.btn kbd {
 			display: none;
 		}
 	}
@@ -1079,10 +915,6 @@
 
 		textarea {
 			min-height: 320px;
-		}
-
-		.preview-frame {
-			max-height: 700px;
 		}
 	}
 
@@ -1102,7 +934,8 @@
 		}
 
 		textarea {
-			min-height: 120px;
+			min-height: 150px;
+			flex: 1;
 		}
 
 		.bottom-actions {
@@ -1122,9 +955,7 @@
 			animation: none;
 		}
 
-		.btn:active,
-		.tab:active,
-		.preview-toggle:active {
+		.btn:active {
 			transform: none;
 		}
 	}
