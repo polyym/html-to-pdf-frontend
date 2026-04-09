@@ -4,3 +4,6 @@
 
 [build.environment]
   NODE_VERSION = "22"
+  # Required: Set PUBLIC_API_URL to your backend API URL in the Netlify dashboard.
+  # Example: PUBLIC_API_URL = "https://your-service.onrender.com"
+  # Without this, the frontend falls back to http://localhost:3001 which won't work in production.

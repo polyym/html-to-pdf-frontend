@@ -6,27 +6,28 @@ export interface FileLoadResult {
 }
 
 const VALID_EXTENSIONS = ['.html', '.htm'];
+const MAX_FILE_SIZE_BYTES = 5 * 1024 * 1024; // 5MB, matches backend limit
 
 function isValidHtmlFile(name: string): boolean {
 	return VALID_EXTENSIONS.some((ext) => name.toLowerCase().endsWith(ext));
 }
 
-export function loadHtmlFile(file: File): Promise<FileLoadResult> {
-	return new Promise((resolve) => {
-		if (!isValidHtmlFile(file.name)) {
-			resolve({ success: false, error: 'Please use an .html or .htm file' });
-			return;
-		}
+export async function loadHtmlFile(file: File): Promise<FileLoadResult> {
+	if (!isValidHtmlFile(file.name)) {
+		return { success: false, error: 'Please use an .html or .htm file' };
+	}
 
-		const reader = new FileReader();
-		reader.onload = () => {
-			resolve({ success: true, content: reader.result as string, fileName: file.name });
-		};
-		reader.onerror = () => {
-			resolve({ success: false, error: 'Failed to read file' });
-		};
-		reader.readAsText(file);
-	});
+	if (file.size > MAX_FILE_SIZE_BYTES) {
+		const sizeMB = (file.size / (1024 * 1024)).toFixed(1);
+		return { success: false, error: `File is too large (${sizeMB}MB). Maximum size is 5MB.` };
+	}
+
+	try {
+		const content = await file.text();
+		return { success: true, content, fileName: file.name };
+	} catch {
+		return { success: false, error: 'Failed to read file' };
+	}
 }
 
 export function getFileFromInput(e: Event): File | null {

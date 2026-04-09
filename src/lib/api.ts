@@ -1,7 +1,7 @@
 import { PUBLIC_API_URL } from '$env/static/public';
 
 export const API_URL = PUBLIC_API_URL || 'http://localhost:3001';
-export const isLocalApi = API_URL.includes('localhost') || API_URL.includes('127.0.0.1');
+export const isLocalApi = /localhost|127\.0\.0\.1|\[::1\]|0\.0\.0\.0/.test(API_URL);
 
 export type ApiStatus = 'checking' | 'online' | 'offline';
 
@@ -21,19 +21,33 @@ export interface GeneratePdfResult {
 }
 
 export async function generatePdf(html: string): Promise<GeneratePdfResult> {
-	const res = await fetch(`${API_URL}/generate-pdf`, {
-		method: 'POST',
-		headers: { 'Content-Type': 'application/json' },
-		body: JSON.stringify({ html })
-	});
+	try {
+		const res = await fetch(`${API_URL}/generate-pdf`, {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({ html }),
+			signal: AbortSignal.timeout(35_000)
+		});
 
-	if (!res.ok) {
-		const text = await res.text();
-		return { success: false, error: text || `Server error (${res.status})` };
+		if (!res.ok) {
+			const text = await res.text();
+			return { success: false, error: text || `Server error (${res.status})` };
+		}
+
+		const blob = await res.blob();
+		return { success: true, blob };
+	} catch (err) {
+		if (err instanceof DOMException && err.name === 'TimeoutError') {
+			return { success: false, error: 'Request timed out. Please try again.' };
+		}
+		if (err instanceof DOMException && err.name === 'AbortError') {
+			return { success: false, error: 'Request was cancelled.' };
+		}
+		return {
+			success: false,
+			error: err instanceof Error ? err.message : 'Network error. Please check your connection.'
+		};
 	}
-
-	const blob = await res.blob();
-	return { success: true, blob };
 }
 
 export function downloadBlob(blob: Blob, filename: string) {
@@ -44,5 +58,5 @@ export function downloadBlob(blob: Blob, filename: string) {
 	document.body.appendChild(a);
 	a.click();
 	document.body.removeChild(a);
-	URL.revokeObjectURL(url);
+	setTimeout(() => URL.revokeObjectURL(url), 1000);
 }

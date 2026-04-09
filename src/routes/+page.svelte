@@ -11,12 +11,36 @@
 	let fileName = $state('');
 	let fileInputEl = $state<HTMLInputElement | null>(null);
 	let isTouchDevice = $state(false);
+	let isMac = $state(false);
 	let showPreview = $state(false);
 	let apiStatus = $state<ApiStatus>('checking');
-	let previewIframeEl = $state<HTMLIFrameElement | null>(null);
-	let previewHeight = $state(300);
+	let apiHasConnected = $state(false);
+	let successTimer: ReturnType<typeof setTimeout> | null = null;
+	let errorTimer: ReturnType<typeof setTimeout> | null = null;
 
 	const hasContent = $derived(html.trim().length > 0);
+
+	function showSuccess(msg: string) {
+		successMessage = msg;
+		if (successTimer) clearTimeout(successTimer);
+		successTimer = setTimeout(() => { successMessage = ''; successTimer = null; }, 2500);
+	}
+
+	function showError(msg: string) {
+		errorMessage = msg;
+		if (errorTimer) clearTimeout(errorTimer);
+		errorTimer = setTimeout(() => { errorMessage = ''; errorTimer = null; }, 4000);
+	}
+
+	function dismissSuccess() {
+		successMessage = '';
+		if (successTimer) { clearTimeout(successTimer); successTimer = null; }
+	}
+
+	function dismissError() {
+		errorMessage = '';
+		if (errorTimer) { clearTimeout(errorTimer); errorTimer = null; }
+	}
 
 	async function handleFile(file: File) {
 		const result = await loadHtmlFile(file);
@@ -24,11 +48,9 @@
 			html = result.content!;
 			fileName = result.fileName!;
 			activeTab = 'editor';
-			successMessage = `Loaded ${result.fileName}`;
-			setTimeout(() => (successMessage = ''), 2500);
+			showSuccess(`Loaded ${result.fileName}`);
 		} else {
-			errorMessage = result.error!;
-			setTimeout(() => (errorMessage = ''), 4000);
+			showError(result.error!);
 		}
 	}
 
@@ -46,18 +68,6 @@
 		e.preventDefault();
 	}
 
-	function updatePreviewHeight() {
-		if (!previewIframeEl) return;
-		try {
-			const doc = previewIframeEl.contentDocument;
-			if (doc?.body) {
-				previewHeight = Math.min(Math.max(doc.body.scrollHeight + 20, 200), 600);
-			}
-		} catch {
-			// cross-origin or not loaded yet
-		}
-	}
-
 	async function generatePdf() {
 		if (!hasContent || isLoading) return;
 
@@ -68,15 +78,14 @@
 			const result = await callGeneratePdf(html);
 			if (result.success && result.blob) {
 				downloadBlob(result.blob, pdfFileName(fileName));
+				apiHasConnected = true;
 				apiStatus = 'online';
-				successMessage = 'PDF downloaded';
-				setTimeout(() => (successMessage = ''), 2500);
+				showSuccess('PDF downloaded');
 			} else {
 				throw new Error(result.error || 'Failed to generate PDF');
 			}
 		} catch (err) {
-			errorMessage = err instanceof Error ? err.message : 'Failed to generate PDF';
-			setTimeout(() => (errorMessage = ''), 4000);
+			showError(err instanceof Error ? err.message : 'Failed to generate PDF');
 		} finally {
 			isLoading = false;
 		}
@@ -88,7 +97,6 @@
 		errorMessage = '';
 		successMessage = '';
 		showPreview = false;
-		previewHeight = 300;
 		if (fileInputEl) fileInputEl.value = '';
 	}
 
@@ -98,16 +106,45 @@
 			generatePdf();
 		}
 		if (e.key === 'Escape' && hasContent) {
-			e.preventDefault();
-			clearAll();
+			const appEl = document.querySelector('.app');
+			if (appEl && appEl.contains(document.activeElement)) {
+				e.preventDefault();
+				clearAll();
+			}
 		}
 	}
 
 	onMount(() => {
 		isTouchDevice = 'ontouchstart' in window || navigator.maxTouchPoints > 0;
+		isMac = (navigator as any).userAgentData?.platform === 'macOS' || navigator.platform?.toUpperCase().includes('MAC') || navigator.userAgent.includes('Mac');
 		document.addEventListener('keydown', handleKeydown);
-		checkApiHealth().then((status) => (apiStatus = status));
-		return () => document.removeEventListener('keydown', handleKeydown);
+
+		let healthTimer: ReturnType<typeof setTimeout> | null = null;
+		let stopped = false;
+
+		async function pollHealth() {
+			if (stopped) return;
+			const status = await checkApiHealth();
+			if (status === 'online') {
+				apiHasConnected = true;
+				apiStatus = 'online';
+			} else {
+				// Stay in 'checking' (pulsing) until we've connected at least once
+				apiStatus = apiHasConnected ? 'offline' : 'checking';
+			}
+			if (stopped) return;
+			// Retry every 5s while not online, relax to 60s once online
+			const delay = status === 'online' ? 60_000 : 5_000;
+			healthTimer = setTimeout(pollHealth, delay);
+		}
+
+		pollHealth();
+
+		return () => {
+			stopped = true;
+			document.removeEventListener('keydown', handleKeydown);
+			if (healthTimer) clearTimeout(healthTimer);
+		};
 	});
 </script>
 
@@ -127,40 +164,61 @@
 			<h1>HTML to PDF</h1>
 			<span class="subtitle">Paste code or upload a file, then download as PDF</span>
 		</div>
-		<div class="status-dot" class:online={apiStatus === 'online'} class:offline={apiStatus === 'offline'} class:checking={apiStatus === 'checking'} title={apiStatus === 'online' ? 'API is online' : apiStatus === 'offline' ? 'API is offline — it may be starting up' : 'Checking API status...'}></div>
+		<div class="status-indicator" role="status" aria-label={apiStatus === 'online' ? 'API is online' : apiStatus === 'offline' ? 'API is offline' : 'Connecting to API'}>
+			<div class="status-dot" class:online={apiStatus === 'online'} class:offline={apiStatus === 'offline'} class:checking={apiStatus === 'checking'} aria-hidden="true"></div>
+			<span class="status-label" aria-hidden="true">{apiStatus === 'online' ? 'Online' : apiStatus === 'offline' ? 'Offline' : 'Connecting...'}</span>
+		</div>
 	</header>
+
+	<!-- Startup banner -->
+	{#if !apiHasConnected && apiStatus !== 'online'}
+		<div class="startup-banner" role="status">
+			<div class="startup-spinner"></div>
+			Backend is starting up, this may take a moment...
+		</div>
+	{/if}
 
 	<!-- Toasts -->
 	{#if successMessage}
-		<div class="toast success">
+		<div class="toast success" role="alert">
 			<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
 				<polyline points="20 6 9 17 4 12" />
 			</svg>
 			{successMessage}
+			<button class="toast-dismiss" onclick={dismissSuccess} aria-label="Dismiss notification">
+				<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+					<line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
+				</svg>
+			</button>
 		</div>
 	{/if}
 
 	{#if errorMessage}
-		<div class="toast error">
+		<div class="toast error" role="alert">
 			<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
 				<circle cx="12" cy="12" r="10" />
 				<line x1="15" y1="9" x2="9" y2="15" />
 				<line x1="9" y1="9" x2="15" y2="15" />
 			</svg>
 			{errorMessage}
+			<button class="toast-dismiss" onclick={dismissError} aria-label="Dismiss notification">
+				<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+					<line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
+				</svg>
+			</button>
 		</div>
 	{/if}
 
 	<!-- Tabs -->
-	<div class="tabs">
-		<button class="tab" class:active={activeTab === 'editor'} onclick={() => (activeTab = 'editor')}>
+	<div class="tabs" role="tablist">
+		<button class="tab" class:active={activeTab === 'editor'} onclick={() => (activeTab = 'editor')} role="tab" id="tab-editor" aria-selected={activeTab === 'editor'} aria-controls="tabpanel-editor" tabindex={activeTab === 'editor' ? 0 : -1} onkeydown={(e) => { if (e.key === 'ArrowRight' || e.key === 'ArrowLeft') { e.preventDefault(); activeTab = activeTab === 'editor' ? 'upload' : 'editor'; requestAnimationFrame(() => document.getElementById(`tab-${activeTab}`)?.focus()); } }}>
 			<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
 				<polyline points="16 18 22 12 16 6" />
 				<polyline points="8 6 2 12 8 18" />
 			</svg>
 			Editor
 		</button>
-		<button class="tab" class:active={activeTab === 'upload'} onclick={() => (activeTab = 'upload')}>
+		<button class="tab" class:active={activeTab === 'upload'} onclick={() => (activeTab = 'upload')} role="tab" id="tab-upload" aria-selected={activeTab === 'upload'} aria-controls="tabpanel-upload" tabindex={activeTab === 'upload' ? 0 : -1} onkeydown={(e) => { if (e.key === 'ArrowRight' || e.key === 'ArrowLeft') { e.preventDefault(); activeTab = activeTab === 'editor' ? 'upload' : 'editor'; requestAnimationFrame(() => document.getElementById(`tab-${activeTab}`)?.focus()); } }}>
 			<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
 				<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
 				<polyline points="17 8 12 3 7 8" />
@@ -171,8 +229,7 @@
 	</div>
 
 	<!-- Editor Tab -->
-	{#if activeTab === 'editor'}
-		<div class="field" ondrop={handleDrop} ondragover={handleDragOver}>
+		<div class="field" ondrop={handleDrop} ondragover={handleDragOver} role="tabpanel" id="tabpanel-editor" aria-labelledby="tab-editor" tabindex="0" hidden={activeTab !== 'editor'}>
 			<div class="field-header">
 				<label for="html-input">
 					HTML Code
@@ -181,7 +238,7 @@
 					{/if}
 				</label>
 				{#if hasContent}
-					<button class="clear-btn" onclick={clearAll}>Clear</button>
+					<button class="clear-btn" onclick={clearAll} aria-label="Clear editor">Clear</button>
 				{/if}
 			</div>
 			<textarea
@@ -192,17 +249,17 @@
 				spellcheck="false"
 			></textarea>
 		</div>
-	{/if}
 
 	<!-- Upload Tab -->
-	{#if activeTab === 'upload'}
 		<div
 			class="drop-zone"
 			ondrop={handleDrop}
 			ondragover={handleDragOver}
-			role="button"
+			role="tabpanel"
+			id="tabpanel-upload"
+			aria-labelledby="tab-upload"
 			tabindex="0"
-			onkeydown={(e) => e.key === 'Enter' && fileInputEl?.click()}
+			hidden={activeTab !== 'upload'}
 		>
 			<input
 				type="file"
@@ -210,6 +267,7 @@
 				onchange={handleFileUpload}
 				bind:this={fileInputEl}
 				class="file-input"
+				aria-label="Upload HTML file"
 			/>
 			<div class="drop-icon">
 				<svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
@@ -227,7 +285,6 @@
 			</p>
 			<p class="drop-hint">Accepts .html and .htm files</p>
 		</div>
-	{/if}
 
 	<!-- Preview Toggle -->
 	{#if hasContent}
@@ -254,11 +311,8 @@
 			<div class="preview-frame">
 				<iframe
 					srcdoc={html}
-					sandbox="allow-same-origin"
+					sandbox=""
 					title="HTML Preview"
-					bind:this={previewIframeEl}
-					onload={updatePreviewHeight}
-					style="height: {previewHeight}px;"
 				></iframe>
 			</div>
 		</div>
@@ -291,7 +345,7 @@
 	<div class="bottom-actions">
 		<div class="bottom-actions-inner">
 			{#if hasContent}
-				<button class="btn secondary" onclick={clearAll}>
+				<button class="btn secondary" onclick={clearAll} aria-label="Clear all">
 					<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
 						<line x1="18" y1="6" x2="6" y2="18" />
 						<line x1="6" y1="6" x2="18" y2="18" />
@@ -312,7 +366,7 @@
 					</svg>
 					Download PDF
 					{#if !isTouchDevice}
-						<kbd>Ctrl+Enter</kbd>
+						<kbd>{isMac ? '⌘+Enter' : 'Ctrl+Enter'}</kbd>
 					{/if}
 				{/if}
 			</button>
@@ -395,14 +449,21 @@
 		flex: 1;
 	}
 
-	/* Status Dot */
+	/* Status Indicator */
+	.status-indicator {
+		display: flex;
+		align-items: center;
+		gap: 6px;
+		flex-shrink: 0;
+		align-self: flex-start;
+		margin-top: 6px;
+	}
+
 	.status-dot {
 		width: 8px;
 		height: 8px;
 		border-radius: 50%;
 		flex-shrink: 0;
-		align-self: flex-start;
-		margin-top: 8px;
 	}
 
 	.status-dot.online {
@@ -418,6 +479,13 @@
 	.status-dot.checking {
 		background: var(--text-dim);
 		animation: pulse 1.5s ease infinite;
+	}
+
+	.status-label {
+		font-size: 11px;
+		font-weight: 500;
+		color: var(--text-secondary);
+		white-space: nowrap;
 	}
 
 	@keyframes pulse {
@@ -436,6 +504,32 @@
 		font-size: 13px;
 		font-weight: 500;
 		color: var(--text-secondary);
+	}
+
+	/* Startup Banner */
+	.startup-banner {
+		display: flex;
+		align-items: center;
+		gap: 10px;
+		padding: 12px 16px;
+		margin-bottom: 20px;
+		font-size: 14px;
+		font-weight: 500;
+		color: var(--text-secondary);
+		background: var(--surface);
+		border: 1px solid var(--border);
+		border-radius: 10px;
+		animation: fadeIn 0.2s ease;
+	}
+
+	.startup-spinner {
+		width: 14px;
+		height: 14px;
+		border: 2px solid var(--border-hover);
+		border-top-color: var(--text-secondary);
+		border-radius: 50%;
+		animation: spin 0.8s linear infinite;
+		flex-shrink: 0;
 	}
 
 	/* Toast */
@@ -472,6 +566,25 @@
 		background: rgba(239, 68, 68, 0.1);
 		border: 1px solid rgba(239, 68, 68, 0.2);
 		color: var(--error);
+	}
+
+	.toast-dismiss {
+		margin-left: auto;
+		background: none;
+		border: none;
+		color: inherit;
+		opacity: 0.5;
+		cursor: pointer;
+		padding: 2px;
+		display: flex;
+		align-items: center;
+		border-radius: 4px;
+		transition: opacity 0.15s ease;
+		flex-shrink: 0;
+	}
+
+	.toast-dismiss:hover {
+		opacity: 1;
 	}
 
 	/* Info Details */
@@ -654,7 +767,7 @@
 
 	textarea.mono {
 		font-family: var(--mono);
-		font-size: 14px;
+		font-size: 16px;
 		tab-size: 2;
 	}
 
@@ -688,6 +801,11 @@
 		height: 100%;
 		opacity: 0;
 		cursor: pointer;
+	}
+
+	.drop-zone:focus-within {
+		border-color: var(--accent);
+		background: var(--surface-2);
 	}
 
 	.drop-icon {
@@ -782,7 +900,7 @@
 
 	.preview-frame iframe {
 		width: 100%;
-		min-height: 200px;
+		height: 400px;
 		border: none;
 		display: block;
 	}
@@ -941,6 +1059,10 @@
 		.bottom-actions {
 			padding-left: 16px;
 			padding-right: 16px;
+		}
+
+		.status-label {
+			display: none;
 		}
 	}
 
