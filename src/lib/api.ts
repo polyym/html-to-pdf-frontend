@@ -14,18 +14,26 @@ export async function checkApiHealth(): Promise<ApiStatus> {
 	}
 }
 
+export interface PdfOptions {
+	landscape: boolean;
+	format: string;
+	printBackground: boolean;
+	scale: number;
+	omitBackground: boolean;
+}
+
 export interface GeneratePdfResult {
 	success: boolean;
 	blob?: Blob;
 	error?: string;
 }
 
-export async function generatePdf(html: string): Promise<GeneratePdfResult> {
+export async function generatePdf(html: string, options: PdfOptions): Promise<GeneratePdfResult> {
 	try {
 		const res = await fetch(`${API_URL}/generate-pdf`, {
 			method: 'POST',
 			headers: { 'Content-Type': 'application/json' },
-			body: JSON.stringify({ html }),
+			body: JSON.stringify({ html, ...options }),
 			signal: AbortSignal.timeout(35_000)
 		});
 

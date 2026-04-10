@@ -9,6 +9,7 @@ Built with SvelteKit and deployed on Netlify. Uses the [html-to-pdf-rust-api](ht
 - Code editor with syntax-friendly monospace input
 - HTML file upload via drag-and-drop or file picker
 - Live HTML preview in a sandboxed iframe
+- Configurable PDF options: orientation, page size, scale, print background, omit background
 - PDF download with original filename preserved
 - Adaptive API health monitoring with visible status indicator (Online/Offline/Starting)
 - Dismissible toast notifications with auto-clear timers
@@ -29,7 +30,7 @@ src/
 └── app.html            # HTML shell — fonts, favicon, theme color
 ```
 
-- **`src/lib/api.ts`** — All communication with the backend API. Exports functions for checking API health, generating PDFs, and downloading the result. The API URL is read from the `PUBLIC_API_URL` environment variable.
+- **`src/lib/api.ts`** — All communication with the backend API. Exports `PdfOptions` type and functions for checking API health, generating PDFs with configurable options, and downloading the result. The API URL is read from the `PUBLIC_API_URL` environment variable.
 - **`src/lib/files.ts`** — Pure utility functions for loading HTML files from file inputs or drag-and-drop events, validating file extensions, and converting filenames (e.g. `page.html` → `page.pdf`).
 - **`src/routes/+page.svelte`** — The main (and only) page. Imports logic from `$lib` and handles UI state, event wiring, and all styling.
 

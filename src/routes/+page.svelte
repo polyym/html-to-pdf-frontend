@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
-	import { API_URL, isLocalApi, checkApiHealth, generatePdf as callGeneratePdf, downloadBlob, type ApiStatus } from '$lib/api';
+	import { API_URL, isLocalApi, checkApiHealth, generatePdf as callGeneratePdf, downloadBlob, type ApiStatus, type PdfOptions } from '$lib/api';
 	import { loadHtmlFile, getFileFromInput, getFileFromDrop, pdfFileName } from '$lib/files';
 
 	let html = $state('');
@@ -13,6 +13,13 @@
 	let isMac = $state(false);
 	let showPreview = $state(false);
 	let isDragging = $state(false);
+	let pdfOptions = $state<PdfOptions>({
+		landscape: false,
+		format: 'A4',
+		printBackground: true,
+		scale: 1,
+		omitBackground: false
+	});
 	let apiStatus = $state<ApiStatus>('checking');
 	let apiHasConnected = $state(false);
 	let successTimer: ReturnType<typeof setTimeout> | null = null;
@@ -93,7 +100,7 @@
 		errorMessage = '';
 
 		try {
-			const result = await callGeneratePdf(html);
+			const result = await callGeneratePdf(html, pdfOptions);
 			if (result.success && result.blob) {
 				downloadBlob(result.blob, pdfFileName(fileName));
 				apiHasConnected = true;
@@ -262,6 +269,64 @@
 		/>
 		<p class="drop-hint">Drop an .html or .htm file, or <button class="browse-link" onclick={() => fileInputEl?.click()}>browse</button></p>
 	</div>
+
+	<!-- PDF Options -->
+	<details class="pdf-options-details">
+		<summary>PDF Options</summary>
+		<div class="pdf-options-grid">
+			<div class="option-group">
+				<span class="option-label">Orientation</span>
+				<div class="toggle-group">
+					<button
+						class="toggle-btn"
+						class:active={!pdfOptions.landscape}
+						onclick={() => (pdfOptions.landscape = false)}
+					>Portrait</button>
+					<button
+						class="toggle-btn"
+						class:active={pdfOptions.landscape}
+						onclick={() => (pdfOptions.landscape = true)}
+					>Landscape</button>
+				</div>
+			</div>
+			<div class="option-group">
+				<label class="option-label" for="page-size">Page Size</label>
+				<select id="page-size" class="option-select" bind:value={pdfOptions.format}>
+					<option value="A3">A3</option>
+					<option value="A4">A4</option>
+					<option value="A5">A5</option>
+					<option value="Letter">Letter</option>
+					<option value="Legal">Legal</option>
+					<option value="Tabloid">Tabloid</option>
+					<option value="Ledger">Ledger</option>
+				</select>
+			</div>
+			<div class="option-group">
+				<label class="option-label" for="scale">Scale</label>
+				<input
+					id="scale"
+					type="number"
+					class="option-input"
+					bind:value={pdfOptions.scale}
+					min="0.1"
+					max="2"
+					step="0.1"
+				/>
+			</div>
+			<div class="option-group">
+				<label class="option-checkbox-label">
+					<input type="checkbox" bind:checked={pdfOptions.printBackground} />
+					<span>Print Background</span>
+				</label>
+			</div>
+			<div class="option-group">
+				<label class="option-checkbox-label">
+					<input type="checkbox" bind:checked={pdfOptions.omitBackground} />
+					<span>Omit Background</span>
+				</label>
+			</div>
+		</div>
+	</details>
 
 	<!-- Live Preview -->
 	{#if showPreview && hasContent}
@@ -685,6 +750,147 @@
 		height: 400px;
 		border: none;
 		display: block;
+	}
+
+	/* PDF Options */
+	.pdf-options-details {
+		margin-bottom: 16px;
+	}
+
+	.pdf-options-details summary {
+		font-size: 13px;
+		font-weight: 500;
+		color: var(--text-dim);
+		cursor: pointer;
+		padding: 8px 0;
+		list-style: none;
+		transition: color 0.15s ease;
+	}
+
+	.pdf-options-details summary::-webkit-details-marker {
+		display: none;
+	}
+
+	.pdf-options-details summary::before {
+		content: '+ ';
+		font-family: var(--mono);
+	}
+
+	.pdf-options-details[open] summary::before {
+		content: '- ';
+	}
+
+	.pdf-options-details summary:hover {
+		color: var(--text-secondary);
+	}
+
+	.pdf-options-grid {
+		display: grid;
+		grid-template-columns: 1fr 1fr;
+		gap: 16px;
+		padding: 16px;
+		background: var(--surface);
+		border: 1px solid var(--border);
+		border-radius: 10px;
+		margin-top: 4px;
+	}
+
+	.option-group {
+		display: flex;
+		flex-direction: column;
+		gap: 6px;
+	}
+
+	.option-label {
+		font-size: 12px;
+		font-weight: 500;
+		color: var(--text-secondary);
+		padding: 0;
+	}
+
+	.toggle-group {
+		display: flex;
+		gap: 0;
+		border: 1px solid var(--border);
+		border-radius: 8px;
+		overflow: hidden;
+	}
+
+	.toggle-btn {
+		flex: 1;
+		padding: 8px 12px;
+		font-family: var(--font);
+		font-size: 13px;
+		font-weight: 500;
+		color: var(--text-dim);
+		background: transparent;
+		border: none;
+		cursor: pointer;
+		transition: all 0.15s ease;
+	}
+
+	.toggle-btn:not(:last-child) {
+		border-right: 1px solid var(--border);
+	}
+
+	.toggle-btn.active {
+		color: var(--text);
+		background: var(--surface-2);
+	}
+
+	.toggle-btn:hover:not(.active) {
+		color: var(--text-secondary);
+	}
+
+	.option-select,
+	.option-input {
+		padding: 8px 12px;
+		font-family: var(--font);
+		font-size: 13px;
+		color: var(--text);
+		background: var(--bg);
+		border: 1px solid var(--border);
+		border-radius: 8px;
+		transition: border-color 0.15s ease;
+	}
+
+	.option-select:hover,
+	.option-input:hover {
+		border-color: var(--border-hover);
+	}
+
+	.option-select:focus,
+	.option-input:focus {
+		outline: none;
+		border-color: #3f3f46;
+	}
+
+	.option-input {
+		width: 100%;
+	}
+
+	.option-checkbox-label {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		font-size: 13px;
+		font-weight: 500;
+		color: var(--text-secondary);
+		cursor: pointer;
+		padding: 8px 0;
+	}
+
+	.option-checkbox-label input[type="checkbox"] {
+		width: 16px;
+		height: 16px;
+		accent-color: var(--accent);
+		cursor: pointer;
+	}
+
+	@media (max-width: 480px) {
+		.pdf-options-grid {
+			grid-template-columns: 1fr;
+		}
 	}
 
 	/* About */
