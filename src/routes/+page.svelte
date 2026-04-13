@@ -1,7 +1,16 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
-	import { API_URL, isLocalApi, checkApiHealth, generatePdf as callGeneratePdf, downloadBlob, type ApiStatus, type PdfOptions } from '$lib/api';
+	import { API_URL, isLocalApi, checkApiHealth, generatePdf as callGeneratePdf, downloadBlob, type ApiStatus, type PdfOptions, type HealthResponse } from '$lib/api';
 	import { loadHtmlFile, getFileFromInput, getFileFromDrop, pdfFileName } from '$lib/files';
+
+	const SUCCESS_TOAST_MS = 2_500;
+	const ERROR_TOAST_MS = 7_000;
+	const ESC_CONFIRM_WINDOW_MS = 1_500;
+	const PREVIEW_DEBOUNCE_MS = 300;
+	const HEALTH_POLL_MS = 60_000;
+	const HEALTH_BACKOFF_MIN_MS = 5_000;
+	const HEALTH_BACKOFF_MAX_MS = 30_000;
+	const RATE_LIMIT_FALLBACK_SECS = 30;
 
 	let html = $state('');
 	let isLoading = $state(false);
@@ -22,22 +31,37 @@
 	});
 	let apiStatus = $state<ApiStatus>('checking');
 	let apiHasConnected = $state(false);
+	let healthData = $state<HealthResponse | null>(null);
+	let rateLimitCountdown = $state(0);
+	let rateLimitedUntil = 0;
+	let rateLimitTimer: ReturnType<typeof setInterval> | null = null;
 	let successTimer: ReturnType<typeof setTimeout> | null = null;
 	let errorTimer: ReturnType<typeof setTimeout> | null = null;
 	let dragCounter = 0;
+	let escPendingClear = false;
+	let escTimer: ReturnType<typeof setTimeout> | null = null;
+
+	// Debounced copy of html for the preview iframe — avoids re-rendering on every keystroke
+	let previewHtml = $state('');
 
 	const hasContent = $derived(html.trim().length > 0);
+
+	$effect(() => {
+		const current = html;
+		const timer = setTimeout(() => { previewHtml = current; }, PREVIEW_DEBOUNCE_MS);
+		return () => clearTimeout(timer);
+	});
 
 	function showSuccess(msg: string) {
 		successMessage = msg;
 		if (successTimer) clearTimeout(successTimer);
-		successTimer = setTimeout(() => { successMessage = ''; successTimer = null; }, 2500);
+		successTimer = setTimeout(() => { successMessage = ''; successTimer = null; }, SUCCESS_TOAST_MS);
 	}
 
 	function showError(msg: string) {
 		errorMessage = msg;
 		if (errorTimer) clearTimeout(errorTimer);
-		errorTimer = setTimeout(() => { errorMessage = ''; errorTimer = null; }, 4000);
+		errorTimer = setTimeout(() => { errorMessage = ''; errorTimer = null; }, ERROR_TOAST_MS);
 	}
 
 	function dismissSuccess() {
@@ -48,6 +72,21 @@
 	function dismissError() {
 		errorMessage = '';
 		if (errorTimer) { clearTimeout(errorTimer); errorTimer = null; }
+	}
+
+	function startRateLimitCountdown(seconds: number) {
+		rateLimitedUntil = Math.floor(Date.now() / 1000) + seconds;
+		rateLimitCountdown = seconds;
+		if (rateLimitTimer) clearInterval(rateLimitTimer);
+		rateLimitTimer = setInterval(() => {
+			const remaining = rateLimitedUntil - Math.floor(Date.now() / 1000);
+			if (remaining <= 0) {
+				rateLimitCountdown = 0;
+				if (rateLimitTimer) { clearInterval(rateLimitTimer); rateLimitTimer = null; }
+			} else {
+				rateLimitCountdown = remaining;
+			}
+		}, 1000);
 	}
 
 	async function handleFile(file: File) {
@@ -64,6 +103,8 @@
 	function handleFileUpload(e: Event) {
 		const file = getFileFromInput(e);
 		if (file) handleFile(file);
+		// Reset so re-selecting the same file triggers onchange
+		if (fileInputEl) fileInputEl.value = '';
 	}
 
 	function handleDrop(e: DragEvent) {
@@ -94,7 +135,8 @@
 	}
 
 	async function generatePdf() {
-		if (!hasContent || isLoading) return;
+		clampScale();
+		if (!hasContent || isLoading || rateLimitCountdown > 0) return;
 
 		isLoading = true;
 		errorMessage = '';
@@ -106,14 +148,30 @@
 				apiHasConnected = true;
 				apiStatus = 'online';
 				showSuccess('PDF downloaded');
+				// Use rate limit reset from response header, fall back to 30s
+				startRateLimitCountdown(result.rateLimitResetSecs || RATE_LIMIT_FALLBACK_SECS);
+			} else if (result.statusCode === 429 && result.isCapacity) {
+				// Concurrency limit — no countdown, can retry when a slot frees
+				showError(result.error || 'Server is at capacity. Please try again shortly.');
+			} else if (result.statusCode === 429) {
+				const wait = result.retryAfterSecs || RATE_LIMIT_FALLBACK_SECS;
+				startRateLimitCountdown(wait);
+				showError(result.error || `Rate limited. Try again in ${wait} seconds.`);
 			} else {
-				throw new Error(result.error || 'Failed to generate PDF');
+				showError(result.error || 'Failed to generate PDF');
 			}
 		} catch (err) {
 			showError(err instanceof Error ? err.message : 'Failed to generate PDF');
 		} finally {
 			isLoading = false;
 		}
+	}
+
+	function clampScale() {
+		const v = pdfOptions.scale;
+		if (!Number.isFinite(v) || v < 0.1) pdfOptions.scale = 0.1;
+		else if (v > 2) pdfOptions.scale = 2;
+		else pdfOptions.scale = Math.round(v * 10) / 10;
 	}
 
 	function clearAll() {
@@ -134,7 +192,15 @@
 			const appEl = document.querySelector('.app');
 			if (appEl && appEl.contains(document.activeElement)) {
 				e.preventDefault();
-				clearAll();
+				if (escPendingClear) {
+					escPendingClear = false;
+					if (escTimer) { clearTimeout(escTimer); escTimer = null; }
+					clearAll();
+				} else {
+					escPendingClear = true;
+					showSuccess('Press Esc again to clear');
+					escTimer = setTimeout(() => { escPendingClear = false; escTimer = null; dismissSuccess(); }, ESC_CONFIRM_WINDOW_MS);
+				}
 			}
 		}
 	}
@@ -146,20 +212,39 @@
 
 		let healthTimer: ReturnType<typeof setTimeout> | null = null;
 		let stopped = false;
+		let offlineRetries = 0;
 
 		async function pollHealth() {
 			if (stopped) return;
-			const status = await checkApiHealth();
-			if (status === 'online') {
+			const result = await checkApiHealth();
+			if (result.apiStatus === 'online' || result.apiStatus === 'degraded') {
 				apiHasConnected = true;
-				apiStatus = 'online';
+				apiStatus = result.apiStatus;
+				healthData = result.health ?? null;
+				offlineRetries = 0;
+				// Sync rate limit countdown with server state:
+				// - Server done, client still counting → clear client countdown
+				// - Server has cooldown we don't know about → start it
+				// - Server reports shorter cooldown than client → correct ours
+				if (result.health) {
+					const serverCooldown = result.health.rate_limiter.cooldown_remaining_secs;
+					if (serverCooldown === 0 && rateLimitCountdown > 0) {
+						rateLimitCountdown = 0;
+						if (rateLimitTimer) { clearInterval(rateLimitTimer); rateLimitTimer = null; }
+					} else if (serverCooldown > 0 && (rateLimitCountdown === 0 || serverCooldown < rateLimitCountdown)) {
+						startRateLimitCountdown(serverCooldown);
+					}
+				}
 			} else {
 				// Stay in 'checking' (pulsing) until we've connected at least once
 				apiStatus = apiHasConnected ? 'offline' : 'checking';
+				healthData = null;
+				offlineRetries++;
 			}
 			if (stopped) return;
-			// Retry every 5s while not online, relax to 60s once online
-			const delay = status === 'online' ? 60_000 : 5_000;
+			// 60s when online; exponential backoff when offline: 5s, 10s, 20s, 30s (capped)
+			const isUp = result.apiStatus === 'online' || result.apiStatus === 'degraded';
+			const delay = isUp ? HEALTH_POLL_MS : Math.min(HEALTH_BACKOFF_MIN_MS * Math.pow(2, offlineRetries - 1), HEALTH_BACKOFF_MAX_MS);
 			healthTimer = setTimeout(pollHealth, delay);
 		}
 
@@ -169,6 +254,10 @@
 			stopped = true;
 			document.removeEventListener('keydown', handleKeydown);
 			if (healthTimer) clearTimeout(healthTimer);
+			if (rateLimitTimer) clearInterval(rateLimitTimer);
+			if (successTimer) clearTimeout(successTimer);
+			if (errorTimer) clearTimeout(errorTimer);
+			if (escTimer) clearTimeout(escTimer);
 		};
 	});
 </script>
@@ -189,9 +278,15 @@
 			<h1>HTML to PDF</h1>
 			<span class="subtitle">Paste code or upload a file, then download as PDF</span>
 		</div>
-		<div class="status-indicator" role="status" aria-label={apiStatus === 'online' ? 'API is online' : apiStatus === 'offline' ? 'API is offline' : 'Connecting to API'}>
-			<div class="status-dot" class:online={apiStatus === 'online'} class:offline={apiStatus === 'offline'} class:checking={apiStatus === 'checking'} aria-hidden="true"></div>
-			<span class="status-label" aria-hidden="true">{apiStatus === 'online' ? 'Online' : apiStatus === 'offline' ? 'Offline' : 'Starting...'}</span>
+		<div class="status-indicator" role="status"
+			aria-label={apiStatus === 'online' ? 'API is online' : apiStatus === 'degraded' ? 'API is degraded' : apiStatus === 'offline' ? 'API is offline' : 'Connecting to API'}
+			title={healthData ? `v${healthData.version} | ${healthData.renders.available}/${healthData.renders.max} render slots` : ''}
+		>
+			<div class="status-dot" class:online={apiStatus === 'online'} class:degraded={apiStatus === 'degraded'} class:offline={apiStatus === 'offline'} class:checking={apiStatus === 'checking'} aria-hidden="true"></div>
+			<span class="status-label" aria-hidden="true">
+				{apiStatus === 'online' ? 'Online' : apiStatus === 'degraded' ? 'Degraded' : apiStatus === 'offline' ? 'Offline' : 'Starting...'}
+				{#if healthData}<span class="version-tag">· API v{healthData.version}</span>{/if}
+			</span>
 		</div>
 	</header>
 
@@ -228,7 +323,7 @@
 
 	<!-- Editor -->
 	<!-- svelte-ignore a11y_no_static_element_interactions -->
-	<div class="field" class:dragging={isDragging} ondrop={handleDrop} ondragover={handleDragOver} ondragenter={handleDragEnter} ondragleave={handleDragLeave}>
+	<div class="field" role="region" aria-label="HTML input" class:dragging={isDragging} ondrop={handleDrop} ondragover={handleDragOver} ondragenter={handleDragEnter} ondragleave={handleDragLeave}>
 		<div class="field-header">
 			<label for="html-input">
 				HTML Code
@@ -237,7 +332,7 @@
 				{/if}
 			</label>
 			{#if hasContent}
-				<button class="preview-link" onclick={() => (showPreview = !showPreview)}>
+				<button class="preview-link" aria-expanded={showPreview} onclick={() => (showPreview = !showPreview)}>
 					<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
 						{#if showPreview}
 							<path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94" />
@@ -276,15 +371,17 @@
 		<div class="pdf-options-grid">
 			<div class="option-group">
 				<span class="option-label">Orientation</span>
-				<div class="toggle-group">
+				<div class="toggle-group" role="group" aria-label="Page orientation">
 					<button
 						class="toggle-btn"
 						class:active={!pdfOptions.landscape}
+						aria-pressed={!pdfOptions.landscape}
 						onclick={() => (pdfOptions.landscape = false)}
 					>Portrait</button>
 					<button
 						class="toggle-btn"
 						class:active={pdfOptions.landscape}
+						aria-pressed={pdfOptions.landscape}
 						onclick={() => (pdfOptions.landscape = true)}
 					>Landscape</button>
 				</div>
@@ -292,9 +389,13 @@
 			<div class="option-group">
 				<label class="option-label" for="page-size">Page Size</label>
 				<select id="page-size" class="option-select" bind:value={pdfOptions.format}>
+					<option value="A0">A0</option>
+					<option value="A1">A1</option>
+					<option value="A2">A2</option>
 					<option value="A3">A3</option>
 					<option value="A4">A4</option>
 					<option value="A5">A5</option>
+					<option value="A6">A6</option>
 					<option value="Letter">Letter</option>
 					<option value="Legal">Legal</option>
 					<option value="Tabloid">Tabloid</option>
@@ -311,6 +412,7 @@
 					min="0.1"
 					max="2"
 					step="0.1"
+					onblur={clampScale}
 				/>
 			</div>
 			<div class="option-group">
@@ -336,7 +438,7 @@
 			</div>
 			<div class="preview-frame">
 				<iframe
-					srcdoc={html}
+					srcdoc={previewHtml}
 					sandbox=""
 					title="HTML Preview"
 				></iframe>
@@ -373,6 +475,11 @@
 	<!-- Bottom Actions -->
 	<div class="bottom-actions">
 		<div class="bottom-actions-inner">
+			<span class="sr-only" aria-live="polite" aria-atomic="true">
+				{#if isLoading}Generating PDF, please wait.
+				{:else if rateLimitCountdown > 0}Rate limited, try again in {rateLimitCountdown} seconds.
+				{/if}
+			</span>
 			{#if hasContent}
 				<button class="btn secondary" onclick={clearAll} aria-label="Clear all">
 					<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -383,10 +490,16 @@
 					{#if !isTouchDevice}<kbd>Esc</kbd>{/if}
 				</button>
 			{/if}
-			<button class="btn primary" disabled={!hasContent || isLoading} onclick={generatePdf}>
+			<button class="btn primary" disabled={!hasContent || isLoading || rateLimitCountdown > 0} onclick={generatePdf}>
 				{#if isLoading}
 					<div class="spinner"></div>
 					Generating...
+				{:else if rateLimitCountdown > 0}
+					<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+						<circle cx="12" cy="12" r="10" />
+						<polyline points="12 6 12 12 16 14" />
+					</svg>
+					Try again in {rateLimitCountdown}s
 				{:else}
 					<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
 						<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
@@ -426,6 +539,7 @@
 		--success: #22c55e;
 		--error: #ef4444;
 		--accent: #3b82f6;
+		--warning: #f59e0b;
 		--font: 'Inter', -apple-system, sans-serif;
 		--mono: 'IBM Plex Mono', monospace;
 
@@ -505,6 +619,11 @@
 		box-shadow: 0 0 6px rgba(239, 68, 68, 0.4);
 	}
 
+	.status-dot.degraded {
+		background: var(--warning);
+		box-shadow: 0 0 6px rgba(245, 158, 11, 0.4);
+	}
+
 	.status-dot.checking {
 		background: var(--text-dim);
 		animation: pulse 1.5s ease infinite;
@@ -515,6 +634,13 @@
 		font-weight: 500;
 		color: var(--text-secondary);
 		white-space: nowrap;
+	}
+
+	.version-tag {
+		font-size: 10px;
+		font-weight: 400;
+		color: var(--text-dim);
+		margin-left: 4px;
 	}
 
 	@keyframes pulse {
@@ -658,7 +784,7 @@
 		border: 1px solid var(--border);
 		border-radius: 12px;
 		resize: vertical;
-		transition: border-color 0.15s ease;
+		transition: border-color 0.15s ease, box-shadow 0.15s ease;
 	}
 
 	textarea::placeholder {
@@ -671,7 +797,8 @@
 
 	textarea:focus {
 		outline: none;
-		border-color: #3f3f46;
+		border-color: var(--accent);
+		box-shadow: 0 0 0 1px var(--accent);
 	}
 
 	textarea.mono {
@@ -842,6 +969,11 @@
 		color: var(--text-secondary);
 	}
 
+	.toggle-btn:focus-visible {
+		outline: 2px solid var(--accent);
+		outline-offset: -2px;
+	}
+
 	.option-select,
 	.option-input {
 		padding: 8px 12px;
@@ -851,7 +983,7 @@
 		background: var(--bg);
 		border: 1px solid var(--border);
 		border-radius: 8px;
-		transition: border-color 0.15s ease;
+		transition: border-color 0.15s ease, box-shadow 0.15s ease;
 	}
 
 	.option-select:hover,
@@ -862,7 +994,8 @@
 	.option-select:focus,
 	.option-input:focus {
 		outline: none;
-		border-color: #3f3f46;
+		border-color: var(--accent);
+		box-shadow: 0 0 0 1px var(--accent);
 	}
 
 	.option-input {
@@ -1076,6 +1209,19 @@
 		to {
 			transform: rotate(360deg);
 		}
+	}
+
+	/* Screen reader only */
+	.sr-only {
+		position: absolute;
+		width: 1px;
+		height: 1px;
+		padding: 0;
+		margin: -1px;
+		overflow: hidden;
+		clip: rect(0, 0, 0, 0);
+		white-space: nowrap;
+		border: 0;
 	}
 
 	/* Responsive - Small Phones */

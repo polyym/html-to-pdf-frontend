@@ -24,6 +24,9 @@ export async function loadHtmlFile(file: File): Promise<FileLoadResult> {
 
 	try {
 		const content = await file.text();
+		if (!content.trim()) {
+			return { success: false, error: 'File is empty' };
+		}
 		return { success: true, content, fileName: file.name };
 	} catch {
 		return { success: false, error: 'Failed to read file' };
@@ -36,7 +39,6 @@ export function getFileFromInput(e: Event): File | null {
 }
 
 export function getFileFromDrop(e: DragEvent): File | null {
-	e.preventDefault();
 	return e.dataTransfer?.files?.[0] ?? null;
 }
 

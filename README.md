@@ -1,71 +1,54 @@
 # HTML to PDF Frontend
 
-A web app for converting HTML to PDF documents. Paste code or upload an HTML file, preview it live, and download the result as a PDF.
+A web app for converting HTML to PDF documents. Paste code or upload an HTML file, preview it live, configure page options, and download the result as a PDF.
 
-Built with SvelteKit and deployed on Netlify. Uses the [html-to-pdf-rust-api](https://github.com/polyym/html-to-pdf-rust-api) backend for PDF rendering.
+Built with [SvelteKit 5](https://svelte.dev/) and deployed on [Netlify](https://www.netlify.com/). Uses the [html-to-pdf-rust-api](https://github.com/polyym/html-to-pdf-rust-api) backend for rendering.
 
 ## Features
 
-- Code editor with syntax-friendly monospace input
-- HTML file upload via drag-and-drop or file picker
-- Live HTML preview in a sandboxed iframe
-- Configurable PDF options: orientation, page size, scale, print background, omit background
-- PDF download with original filename preserved
-- Adaptive API health monitoring with visible status indicator (Online/Offline/Starting)
-- Dismissible toast notifications with auto-clear timers
-- Keyboard shortcuts: `Ctrl+Enter` (`⌘+Enter` on Mac) to download, `Esc` to clear (when focused)
-- Accessible: ARIA live regions, focus indicators, screen reader support
-- Responsive design with mobile, touch, and small-screen support
+- **Editor** — Monospace code input with drag-and-drop or file picker upload (.html/.htm)
+- **Live preview** — Sandboxed iframe preview of your HTML, debounced for performance
+- **PDF options** — Orientation, page size (A0–A6, Letter, Legal, Tabloid, Ledger), scale (0.1–2.0), print/omit background
+- **Smart status** — Real-time API health indicator with version and render slot availability on hover
+- **Rate limit handling** — Countdown timer on the download button, synced with the server's cooldown state
+- **Validation** — Client-side checks for empty content, file size (5MB), scale range, and empty files before sending
+- **Error feedback** — Distinct messages for validation errors, payload limits, rate limiting, capacity, and timeouts
+- **Keyboard shortcuts** — `Ctrl+Enter` / `⌘+Enter` to download, double `Esc` to clear
+- **Accessible** — ARIA roles, labels, toggle states, focus indicators, and a screen-reader live region for loading state
+- **Responsive** — Mobile, tablet, landscape, and notched-device support with safe area insets
 
 ## Project Structure
 
 ```
 src/
 ├── lib/
-│   ├── api.ts          # API communication — health checks, PDF generation, blob download
-│   └── files.ts        # File handling — validation, reading, drag-and-drop helpers
+│   ├── api.ts          # API client — health checks, PDF generation, blob download
+│   └── files.ts        # File utilities — validation, reading, drag-and-drop
 ├── routes/
-│   ├── +layout.svelte  # SEO meta tags (title, OG, Twitter card)
-│   └── +page.svelte    # Main page — UI state, template, and styles
-└── app.html            # HTML shell — fonts, favicon, theme color
+│   ├── +layout.svelte  # Shell layout with SEO meta tags
+│   ├── +error.svelte   # Branded error page for unexpected failures
+│   └── +page.svelte    # Main page — state, UI, and styles
+└── app.html            # HTML shell — fonts, favicon, theme colour
+_headers                # Netlify security headers
 ```
 
-- **`src/lib/api.ts`** — All communication with the backend API. Exports `PdfOptions` type and functions for checking API health, generating PDFs with configurable options, and downloading the result. The API URL is read from the `PUBLIC_API_URL` environment variable.
-- **`src/lib/files.ts`** — Pure utility functions for loading HTML files from file inputs or drag-and-drop events, validating file extensions, and converting filenames (e.g. `page.html` → `page.pdf`).
-- **`src/routes/+page.svelte`** — The main (and only) page. Imports logic from `$lib` and handles UI state, event wiring, and all styling.
+## Getting Started
 
-## Running Locally
+### Prerequisites
 
-To run the full stack locally, you need both this frontend and the backend API.
+- [Node.js](https://nodejs.org/) v22+
+- The [html-to-pdf-rust-api](https://github.com/polyym/html-to-pdf-rust-api) backend running locally (requires Rust and Chrome/Chromium — see the [backend README](https://github.com/polyym/html-to-pdf-rust-api#readme))
 
-### 1. Clone both repos
+### Setup
 
 ```bash
-git clone https://github.com/polyym/html-to-pdf-rust-api.git
 git clone https://github.com/polyym/html-to-pdf-frontend.git
-```
-
-### 2. Start the backend API
-
-Requires [Rust](https://rustup.rs/), [Node.js](https://nodejs.org/) v22+, and Chrome/Chromium installed.
-
-```bash
-cd html-to-pdf-rust-api
-npm install
-cargo run
-```
-
-The API starts on `http://localhost:3001`. See the [backend README](https://github.com/polyym/html-to-pdf-rust-api#readme) for full setup details and configuration options.
-
-### 3. Start the frontend
-
-```bash
 cd html-to-pdf-frontend
 npm install
 npm run dev
 ```
 
-The app starts on `http://localhost:5173` and connects to the API at `http://localhost:3001` by default. No configuration needed for local development.
+The app starts on `http://localhost:5173` and connects to the backend at `http://localhost:3001` by default.
 
 ## Configuration
 
@@ -73,12 +56,14 @@ The app starts on `http://localhost:5173` and connects to the API at `http://loc
 |----------|---------|-------------|
 | `PUBLIC_API_URL` | `http://localhost:3001` | Backend API URL |
 
-The `.env` file sets this to `localhost:3001` for local development. For production, set `PUBLIC_API_URL` as an environment variable on your hosting platform.
+For local development, the default works out of the box. For production, set `PUBLIC_API_URL` as an environment variable on your hosting platform (see `.env.example`).
 
 ## Deploying to Netlify
 
 1. Push to a GitHub repo
 2. Connect the repo on Netlify
-3. Build settings are configured in `netlify.toml` (build command: `npm run build`, publish: `build`)
-4. Add environment variable: `PUBLIC_API_URL` = `https://html-to-pdf-rust-api.onrender.com`
+3. Build settings are pre-configured in `netlify.toml`
+4. Add environment variable: `PUBLIC_API_URL` = your backend URL
 5. Deploy
+
+Security headers (`X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy`, `Permissions-Policy`) are applied automatically via the `_headers` file.
