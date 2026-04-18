@@ -41,10 +41,11 @@
 	let escPendingClear = false;
 	let escTimer: ReturnType<typeof setTimeout> | null = null;
 
-	// Debounced copy of html for the preview iframe — avoids re-rendering on every keystroke
+	// Debounced copy of html for the preview iframe: avoids re-rendering on every keystroke
 	let previewHtml = $state('');
 
 	const hasContent = $derived(html.trim().length > 0);
+	const apiReady = $derived(apiStatus === 'online' || apiStatus === 'degraded');
 
 	$effect(() => {
 		const current = html;
@@ -136,7 +137,7 @@
 
 	async function generatePdf() {
 		clampScale();
-		if (!hasContent || isLoading || rateLimitCountdown > 0) return;
+		if (!hasContent || isLoading || rateLimitCountdown > 0 || !apiReady) return;
 
 		isLoading = true;
 		errorMessage = '';
@@ -151,7 +152,7 @@
 				// Use rate limit reset from response header, fall back to 30s
 				startRateLimitCountdown(result.rateLimitResetSecs || RATE_LIMIT_FALLBACK_SECS);
 			} else if (result.statusCode === 429 && result.isCapacity) {
-				// Concurrency limit — no countdown, can retry when a slot frees
+				// Concurrency limit: no countdown, can retry when a slot frees
 				showError(result.error || 'Server is at capacity. Please try again shortly.');
 			} else if (result.statusCode === 429) {
 				const wait = result.retryAfterSecs || RATE_LIMIT_FALLBACK_SECS;
@@ -207,7 +208,8 @@
 
 	onMount(() => {
 		isTouchDevice = 'ontouchstart' in window || navigator.maxTouchPoints > 0;
-		isMac = (navigator as any).userAgentData?.platform === 'macOS' || navigator.platform?.toUpperCase().includes('MAC') || navigator.userAgent.includes('Mac');
+		const uaData = (navigator as Navigator & { userAgentData?: { platform?: string } }).userAgentData;
+		isMac = uaData?.platform === 'macOS' || /Mac/i.test(navigator.userAgent);
 		document.addEventListener('keydown', handleKeydown);
 
 		let healthTimer: ReturnType<typeof setTimeout> | null = null;
@@ -474,9 +476,17 @@
 
 	<!-- Bottom Actions -->
 	<div class="bottom-actions">
+		{#if !apiReady}
+			<p class="api-hint">
+				{apiStatus === 'offline'
+					? 'Backend is offline'
+					: 'Backend is starting up. First load can take 30-60s'}
+			</p>
+		{/if}
 		<div class="bottom-actions-inner">
 			<span class="sr-only" aria-live="polite" aria-atomic="true">
 				{#if isLoading}Generating PDF, please wait.
+				{:else if !apiReady}API is starting, please wait.
 				{:else if rateLimitCountdown > 0}Rate limited, try again in {rateLimitCountdown} seconds.
 				{/if}
 			</span>
@@ -490,10 +500,13 @@
 					{#if !isTouchDevice}<kbd>Esc</kbd>{/if}
 				</button>
 			{/if}
-			<button class="btn primary" disabled={!hasContent || isLoading || rateLimitCountdown > 0} onclick={generatePdf}>
+			<button class="btn primary" disabled={!hasContent || isLoading || rateLimitCountdown > 0 || !apiReady} onclick={generatePdf}>
 				{#if isLoading}
 					<div class="spinner"></div>
 					Generating...
+				{:else if !apiReady}
+					<div class="spinner"></div>
+					Waking API...
 				{:else if rateLimitCountdown > 0}
 					<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
 						<circle cx="12" cy="12" r="10" />
@@ -1127,6 +1140,14 @@
 		gap: 10px;
 		max-width: 960px;
 		margin: 0 auto;
+	}
+
+	.api-hint {
+		max-width: 960px;
+		margin: 0 auto 8px;
+		font-size: 12px;
+		color: var(--text-dim);
+		text-align: center;
 	}
 
 	.btn {

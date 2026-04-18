@@ -1,6 +1,6 @@
-import { PUBLIC_API_URL } from '$env/static/public';
+import { env } from '$env/dynamic/public';
 
-export const API_URL = PUBLIC_API_URL || 'http://localhost:3001';
+export const API_URL = env.PUBLIC_API_URL || 'http://localhost:3001';
 export const isLocalApi = /localhost|127\.0\.0\.1|\[::1\]|0\.0\.0\.0/.test(API_URL);
 
 const HEALTH_TIMEOUT_MS = 5_000;
@@ -80,14 +80,10 @@ export async function generatePdf(html: string, options: PdfOptions): Promise<Ge
 				case 413:
 					return { success: false, error: 'Payload too large. Please reduce your HTML content size.', statusCode: 413 };
 				case 429: {
-					// Backend returns 429 for both rate-limiting (has retry-after) and concurrency capacity (no retry-after)
+					// Backend returns 429 for both rate-limiting (has Retry-After) and concurrency capacity (no Retry-After)
 					const retryAfter = res.headers.get('retry-after');
-					let parsed = retryAfter ? parseInt(retryAfter, 10) : undefined;
-					if (!Number.isFinite(parsed)) {
-						const match = text.match(/wait\s+(\d+)\s+second/i);
-						parsed = match ? parseInt(match[1], 10) : undefined;
-					}
-					const isCapacity = !retryAfter && !Number.isFinite(parsed);
+					const parsed = retryAfter ? parseInt(retryAfter, 10) : NaN;
+					const isCapacity = !retryAfter;
 					return {
 						success: false,
 						error: text || (isCapacity ? 'Server is at capacity. Please try again shortly.' : 'Rate limited. Please wait before trying again.'),
